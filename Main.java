@@ -1,93 +1,106 @@
-#!/bin/bash
+import java.lang.ref.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.function.*;
 
-NUM_COMMITS=10
-touch Main.java
+public class Main {
 
-START_DATE=$(date -d "2025-06-15" +%s)
-END_DATE=$(date -d "2025-10-01" +%s)
+    private static final ExecutorService executor = Executors.newFixedThreadPool(5);
+    private static final Map<String, WeakReference<ExpensiveObject>> cache = new ConcurrentHashMap<>();
+    private static final AtomicInteger counter = new AtomicInteger(0);
+    private static volatile boolean running = true;
+    private static final Object lock = new Object();
 
-declare -A used_dates
+    public static void main(String[] args) {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println("Shutting down gracefully...");
+            running = false;
+            executor.shutdown();
+        }));
 
-# Array of Java developer style commit messages
-messages=(
-"Refactor UserService for readability"
-"Fix NullPointerException in OrderController"
-"Add unit tests for PaymentService"
-"Optimize database query in ProductRepository"
-"Implement JWT authentication"
-"Update README with project setup"
-"Improve exception handling in BillingService"
-"Add logging for debugging purposes"
-"Refactor code for better modularity"
-"Fix bug in user registration flow"
-)
+        System.out.println("System initializing...");
+        preloadCache();
+        startBackgroundGCWatcher();
 
-for i in $(seq 0 $(($NUM_COMMITS-1)))
-do
-  while true; do
-    RANDOM_TS=$((START_DATE + RANDOM % (END_DATE - START_DATE + 1)))
-    RANDOM_DAY=$(date -d @"$RANDOM_TS" +%Y-%m-%d)
-    if [[ -z "${used_dates[$RANDOM_DAY]}" ]]; then
-      used_dates[$RANDOM_DAY]=1
-      break
-    fi
-  done
+        IntStream.range(0, 10).forEach(i ->
+            executor.submit(() -> processRequest("Request-" + i))
+        );
 
-  COMMIT_DATE=$(date -d "$RANDOM_DAY" +"%Y-%m-%dT%H:%M:%S")
+        waitForCompletion();
+        System.out.println("All tasks completed successfully!");
+    }
 
-  # Random change in the file
-  echo "// random change $RANDOM" >> Main.java
+    private static void preloadCache() {
+        for (int i = 0; i < 5; i++) {
+            String key = "Obj-" + i;
+            cache.put(key, new WeakReference<>(new ExpensiveObject(key)));
+        }
+    }
 
-  # Commit with realistic Java dev message
-  git add Main.java
-  GIT_COMMITTER_DATE="$COMMIT_DATE" git commit --date="$COMMIT_DATE" -m "${messages[$i]}"
-done
-// random change 28322
-// random change 10889
-// random change 28249
-// random change 9778
-// random change 2840
-// random change 15687
-// random change 9041
-// random change 28815
-// random change 7283
-// random change 5253
-// random change 13821
-// random change 20773
-// random change 11632
-// random change 7525
-// random change 24162
-// random change 6299
-// random change 16666
-// random change 1833
-// random change 24067
-// random change 11122
-// random change 11545
-// random change 27469
-// random change 24856
-// random change 12198
-// random change 15123
-// random change 20457
-// random change 30792
-// random change 10752
-// random change 22199
-// random change 26124
-// random change 17015
-// random change 18207
-// random change 24244
-// random change 9565
-// random change 12378
-// random change 27789
-// random change 9535
-// random change 20661
-// random change 17722
-// random change 24328
-// random change 1881
-// random change 18586
-// random change 23795
-// random change 31602
-// random change 2462
-// random change 4081
-// random change 6645
-// random change 17019
-// random change 6475
+    private static void processRequest(String request) {
+        synchronized (lock) {
+            System.out.println(Thread.currentThread().getName() + " handling " + request);
+            try {
+                Optional.ofNullable(cache.get("Obj-" + (counter.get() % 5)))
+                        .map(WeakReference::get)
+                        .ifPresentOrElse(
+                            ExpensiveObject::compute,
+                            () -> System.out.println("Cache miss for " + request)
+                        );
+
+                counter.incrementAndGet();
+                if (counter.get() % 3 == 0) {
+                    System.gc(); // Simulate GC pressure
+                }
+
+                Thread.sleep(new Random().nextInt(400) + 100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    private static void startBackgroundGCWatcher() {
+        Thread watcher = new Thread(() -> {
+            while (running) {
+                try {
+                    Thread.sleep(1000);
+                    System.out.println("Active Threads: " + Thread.activeCount());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+        watcher.setDaemon(true);
+        watcher.start();
+    }
+
+    private static void waitForCompletion() {
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    // Nested static class simulating a heavy computation object
+    private static class ExpensiveObject {
+        private final String id;
+        private final byte[] data = new byte[1024 * 256]; // 256 KB of data
+
+        ExpensiveObject(String id) {
+            this.id = id;
+        }
+
+        void compute() {
+            double result = Math.sqrt(System.nanoTime() * Math.random());
+            if (result < 0) throw new IllegalStateException("Negative computation!");
+            System.out.println("[" + id + "] Computation result: " + result);
+        }
+    }
+}
